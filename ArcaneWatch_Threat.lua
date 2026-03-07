@@ -382,7 +382,7 @@ function Threat:PollCombatLog()
         })
     end
 
-    if #data == 0 then
+    if table.getn(data) == 0 then
         self:ClearRows()
         return
     end

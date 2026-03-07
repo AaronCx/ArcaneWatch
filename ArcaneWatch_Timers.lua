@@ -163,7 +163,7 @@ function Timers:SetupTimerRows()
     -- Resize panel to fit tracked spell count
     local count = 0
     for _ in ipairs(self.trackedSpells) do count = count + 1 end
-    local panelH = 22 + count * 24 + 6
+    local panelH = 22 + count * 20 + 6
     ArcaneWatch.UI.timersPanel:SetHeight(panelH)
 end
 
