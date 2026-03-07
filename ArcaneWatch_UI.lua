@@ -8,10 +8,10 @@
 ArcaneWatch.UI = {}
 
 local UI = ArcaneWatch.UI
-local PANEL_WIDTH_THREAT  = 180
-local PANEL_WIDTH_TIMERS  = 220
-local THREAT_ROW_HEIGHT   = 18
-local TIMER_ROW_HEIGHT    = 22
+local PANEL_WIDTH_THREAT  = 240
+local PANEL_WIDTH_TIMERS  = 280
+local THREAT_ROW_HEIGHT   = 20
+local TIMER_ROW_HEIGHT    = 24
 local HEADER_HEIGHT       = 22
 local MAX_THREAT_ROWS     = 5
 local MAX_TIMER_ROWS      = 10

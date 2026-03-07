@@ -1,26 +1,32 @@
 ------------------------------------------------------------
--- ArcaneWatch_Timers.lua
--- Spell cooldown / timer tracker. Detects casts via
--- combat log events, starts countdown timers, and updates
--- bars with color transitions (blue -> yellow -> red).
--- Pulses icons when a cooldown is ready.
+-- ArcaneWatch_Timers.lua  (v1.1)
+-- Spell cooldown / timer tracker.
+--
+-- State flow per spell:
+--   READY  (green bar, "Ready" text, icon pulses)
+--     -> cast detected ->
+--   ACTIVE (bar drains, countdown text, blue->yellow->red)
+--     -> timer expires ->
+--   READY  (back to green, "Ready", pulse)
+--
+-- Detects casts via combat log events and
+-- UNIT_SPELLCAST_SUCCEEDED (Turtle WoW).
 ------------------------------------------------------------
 
 ArcaneWatch.Timers = {}
 
 local Timers = ArcaneWatch.Timers
 
--- Known spell durations (seconds). These are default DoT/CD durations
--- for common Warlock spells. Users can customize the tracked list.
+-- Known spell durations (seconds) — DoT durations / cooldowns
 local SPELL_DURATIONS = {
     ["Corruption"]           = 18,
     ["Curse of Agony"]       = 24,
     ["Unstable Affliction"]  = 18,
     ["Siphon Life"]          = 30,
-    ["Shadow Bolt"]          = 0,   -- no CD, track cast only
-    ["Fear"]                 = 20,  -- duration of the CC
-    ["Death Coil"]           = 120, -- 2 min cooldown
-    ["Shadowburn"]           = 15,  -- cooldown
+    ["Shadow Bolt"]          = 3,    -- cast time as pseudo-timer
+    ["Fear"]                 = 20,
+    ["Death Coil"]           = 120,
+    ["Shadowburn"]           = 15,
     ["Immolate"]             = 15,
     ["Conflagrate"]          = 10,
     ["Curse of the Elements"] = 300,
@@ -29,24 +35,25 @@ local SPELL_DURATIONS = {
     ["Curse of Weakness"]    = 120,
     ["Drain Life"]           = 5,
     ["Drain Soul"]           = 15,
-    ["Life Tap"]             = 0,
+    ["Life Tap"]             = 3,
     ["Howl of Terror"]       = 40,
     ["Shadowfury"]           = 20,
-    ["Soul Fire"]            = 0,
+    ["Soul Fire"]            = 6,
 }
 
--- Active timers: { spellName = { startTime, duration, active } }
-local activeTimers = {}
+-- Timer states
+local STATE_READY  = 1
+local STATE_ACTIVE = 2
 
--- Pulse state for ready spells
-local pulseTimers = {}
+-- Per-spell state: { state, startTime, duration }
+local spellStates = {}
 
 -- OnUpdate accumulator
 local elapsed = 0
-local UPDATE_INTERVAL = 0.05 -- smooth bar updates
+local UPDATE_INTERVAL = 0.05
 
 ------------------------------------------------------------
--- Init: register events for cast detection
+-- Init
 ------------------------------------------------------------
 function Timers:Init()
     self.frame = CreateFrame("Frame", "ArcaneWatchTimerLogic", UIParent)
@@ -58,11 +65,9 @@ function Timers:Init()
     self.frame:RegisterEvent("CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE")
     self.frame:RegisterEvent("CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE")
 
-    -- Turtle WoW may support UNIT_SPELLCAST_SUCCEEDED
-    if self.frame.RegisterEvent then
-        -- Try registering; will silently fail if not available
-        self.frame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
-    end
+    -- Turtle WoW extended event
+    self.frame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+    self.frame:RegisterEvent("UNIT_SPELLCAST_SENT")
 
     local this = self
     self.frame:SetScript("OnEvent", function()
@@ -76,25 +81,22 @@ function Timers:Init()
         this:OnUpdate()
     end)
 
-    -- Initialize tracked spells from config
     self:RefreshTrackedList()
 end
 
 ------------------------------------------------------------
--- Refresh the list of tracked spells from saved config
+-- Refresh tracked spell list from config
 ------------------------------------------------------------
 function Timers:RefreshTrackedList()
     local tracked = ArcaneWatch.Config:Get("trackedSpells")
     if not tracked then return end
 
-    -- Build icon cache for each tracked spell
     self.trackedSpells = {}
     for i, spellName in ipairs(tracked) do
-        if i > 10 then break end -- max 10 slots
+        if i > 10 then break end
 
-        -- Try to find the spell texture
+        -- Search spellbook for the icon texture
         local texture = nil
-        -- Search spellbook for the icon
         local bookType = "spell"
         local j = 1
         while true do
@@ -107,19 +109,29 @@ function Timers:RefreshTrackedList()
             j = j + 1
         end
 
+        local dur = SPELL_DURATIONS[spellName] or 10
+
         self.trackedSpells[i] = {
             name     = spellName,
             texture  = texture,
-            duration = SPELL_DURATIONS[spellName] or 10,
+            duration = dur,
         }
+
+        -- Initialize all spells to READY state
+        if not spellStates[spellName] then
+            spellStates[spellName] = {
+                state     = STATE_READY,
+                startTime = 0,
+                duration  = dur,
+            }
+        end
     end
 
-    -- Setup initial UI for tracked spells
     self:SetupTimerRows()
 end
 
 ------------------------------------------------------------
--- Setup timer row icons and names
+-- Setup timer row visuals (icons, names, initial "Ready")
 ------------------------------------------------------------
 function Timers:SetupTimerRows()
     local rows = ArcaneWatch.UI.timerRows
@@ -135,83 +147,80 @@ function Timers:SetupTimerRows()
                 row.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
             end
             row.nameText:SetText(spell.name)
-            row.timeText:SetText("")
-            row.bar:SetValue(0)
-            row.bar:SetStatusBarColor(0.3, 0.5, 0.9, 0.9) -- default blue
+
+            -- Start in READY state: full green bar, "Ready" text
+            row.bar:SetValue(1)
+            row.bar:SetStatusBarColor(0.2, 0.8, 0.3, 0.8)
+            row.timeText:SetText("Ready")
+            row.timeText:SetTextColor(0.3, 1.0, 0.3, 1)
+            row.icon:SetAlpha(1.0)
             row.frame:Show()
         else
             row.frame:Hide()
         end
     end
 
-    -- Resize the timers panel to fit actual tracked count
+    -- Resize panel to fit tracked spell count
     local count = 0
     for _ in ipairs(self.trackedSpells) do count = count + 1 end
-    local panelH = 22 + count * 22 + 6
+    local panelH = 22 + count * 24 + 6
     ArcaneWatch.UI.timersPanel:SetHeight(panelH)
 end
 
 ------------------------------------------------------------
--- Event handler: detect spell casts from combat log
+-- Event: detect spell casts
 ------------------------------------------------------------
 function Timers:OnEvent(evt, a1, a2, a3)
     if not ArcaneWatch.Config:Get("timersEnabled") then return end
 
-    -- UNIT_SPELLCAST_SUCCEEDED (Turtle WoW extended event)
-    if evt == "UNIT_SPELLCAST_SUCCEEDED" then
-        if a1 == "player" then
-            self:TryStartTimer(a2)
+    -- Turtle WoW: UNIT_SPELLCAST_SUCCEEDED / UNIT_SPELLCAST_SENT
+    if evt == "UNIT_SPELLCAST_SUCCEEDED" or evt == "UNIT_SPELLCAST_SENT" then
+        if a1 == "player" and a2 then
+            self:OnSpellCast(a2)
         end
         return
     end
 
-    -- Vanilla combat log parsing
-    if evt == "CHAT_MSG_SPELL_SELF_DAMAGE" or
-       evt == "CHAT_MSG_SPELL_SELF_BUFF" or
-       evt == "CHAT_MSG_SPELL_PERIODIC_SELF_DAMAGE" or
-       evt == "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE" or
-       evt == "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE" then
-        if a1 then
-            self:ParseCombatMessage(a1)
-        end
+    -- Vanilla combat log
+    if a1 then
+        self:ParseCombatMessage(a1)
     end
 end
 
 ------------------------------------------------------------
--- Parse combat log message to detect spell names
+-- Parse vanilla combat log for self-casts
 ------------------------------------------------------------
 function Timers:ParseCombatMessage(msg)
     if not self.trackedSpells then return end
 
+    -- Only process our own casts
+    if not (string.find(msg, "^Your ") or string.find(msg, "^You ")) then
+        return
+    end
+
     for i, spell in ipairs(self.trackedSpells) do
-        -- Check if the combat message contains our tracked spell name
-        -- Patterns: "Your Corruption hits ...", "You cast Corruption", etc.
-        if string.find(msg, spell.name) then
-            -- Only start if "Your" or "You" is in the message (self-cast)
-            if string.find(msg, "^Your ") or string.find(msg, "^You ") then
-                self:TryStartTimer(spell.name)
-                return -- first match wins
-            end
+        if string.find(msg, spell.name, 1, true) then
+            self:OnSpellCast(spell.name)
+            return
         end
     end
 end
 
 ------------------------------------------------------------
--- Start a timer for a spell
+-- Handle a spell cast: transition from READY -> ACTIVE
 ------------------------------------------------------------
-function Timers:TryStartTimer(spellName)
+function Timers:OnSpellCast(spellName)
     if not self.trackedSpells then return end
 
     for i, spell in ipairs(self.trackedSpells) do
         if spell.name == spellName then
             local dur = spell.duration
             if dur and dur > 0 then
-                activeTimers[spellName] = {
+                spellStates[spellName] = {
+                    state     = STATE_ACTIVE,
                     startTime = GetTime(),
                     duration  = dur,
-                    active    = true,
                 }
-                pulseTimers[spellName] = nil -- stop pulsing if re-cast
             end
             return
         end
@@ -219,7 +228,7 @@ function Timers:TryStartTimer(spellName)
 end
 
 ------------------------------------------------------------
--- OnUpdate: update timer bars, colors, and pulse effects
+-- OnUpdate: render all timer rows based on state
 ------------------------------------------------------------
 function Timers:OnUpdate()
     if not ArcaneWatch.Config:Get("timersEnabled") then return end
@@ -232,57 +241,60 @@ function Timers:OnUpdate()
         local row = rows[i]
         if not row then break end
 
-        local timer = activeTimers[spell.name]
-        if timer and timer.active then
-            local remaining = timer.duration - (now - timer.startTime)
+        local ss = spellStates[spell.name]
+        if not ss then
+            -- Safety: init to ready
+            ss = { state = STATE_READY, startTime = 0, duration = spell.duration }
+            spellStates[spell.name] = ss
+        end
+
+        if ss.state == STATE_ACTIVE then
+            local remaining = ss.duration - (now - ss.startTime)
 
             if remaining <= 0 then
-                -- Timer expired: mark ready, start pulse
-                timer.active = false
-                row.bar:SetValue(0)
+                -- Timer expired -> back to READY
+                ss.state = STATE_READY
+                row.bar:SetValue(1)
+                row.bar:SetStatusBarColor(0.2, 0.8, 0.3, 0.8)
                 row.timeText:SetText("Ready")
                 row.timeText:SetTextColor(0.3, 1.0, 0.3, 1)
-                row.bar:SetStatusBarColor(0.2, 0.8, 0.2, 0.7)
-                pulseTimers[spell.name] = now
+                row.icon:SetAlpha(1.0)
             else
-                -- Timer active: update bar and text
-                local pct = remaining / timer.duration
+                -- Active countdown: bar drains from full to empty
+                local pct = remaining / ss.duration
                 row.bar:SetValue(pct)
                 row.timeText:SetText(ArcaneWatch.FormatTime(remaining))
                 row.timeText:SetTextColor(1, 1, 1, 1)
+                row.icon:SetAlpha(1.0)
 
-                -- Color transition: blue(1.0) -> yellow(0.5) -> red(0.0)
+                -- Color: blue (full) -> yellow (half) -> red (empty)
                 local r, g, b
                 if pct > 0.5 then
-                    -- Blue to Yellow: pct 1.0->0.5
-                    local t = (pct - 0.5) / 0.5
-                    r = 1.0 - t * 0.7     -- 0.3 -> 1.0
-                    g = 0.5 + t * 0.0     -- 0.5 -> 0.5  ... actually:
+                    local t = (pct - 0.5) / 0.5  -- 1 at full, 0 at half
                     -- blue (0.3, 0.5, 0.9) -> yellow (0.9, 0.8, 0.2)
-                    r = 0.9 - t * 0.6     -- 0.9 at 0.5, 0.3 at 1.0
-                    g = 0.8 - t * 0.3     -- 0.8 at 0.5, 0.5 at 1.0
-                    b = 0.2 + t * 0.7     -- 0.2 at 0.5, 0.9 at 1.0
+                    r = 0.9 - t * 0.6
+                    g = 0.8 - t * 0.3
+                    b = 0.2 + t * 0.7
                 else
-                    -- Yellow to Red: pct 0.5->0.0
-                    local t = pct / 0.5
+                    local t = pct / 0.5  -- 1 at half, 0 at empty
                     -- yellow (0.9, 0.8, 0.2) -> red (0.9, 0.2, 0.1)
                     r = 0.9
-                    g = 0.2 + t * 0.6     -- 0.2 at 0.0, 0.8 at 0.5
-                    b = 0.1 + t * 0.1     -- 0.1 at 0.0, 0.2 at 0.5
+                    g = 0.2 + t * 0.6
+                    b = 0.1 + t * 0.1
                 end
                 row.bar:SetStatusBarColor(r, g, b, 0.9)
             end
-        elseif pulseTimers[spell.name] then
-            -- Pulse the icon when ready
-            local pulseAge = now - pulseTimers[spell.name]
-            local alpha = 0.5 + 0.5 * math.abs(math.sin(pulseAge * 3))
-            row.icon:SetAlpha(alpha)
+
         else
-            -- Idle state: no active timer
-            row.bar:SetValue(0)
-            row.timeText:SetText("")
-            row.bar:SetStatusBarColor(0.3, 0.5, 0.9, 0.3)
-            row.icon:SetAlpha(1.0)
+            -- STATE_READY: green bar, "Ready" text, gentle pulse
+            row.bar:SetValue(1)
+            row.bar:SetStatusBarColor(0.2, 0.8, 0.3, 0.8)
+            row.timeText:SetText("Ready")
+            row.timeText:SetTextColor(0.3, 1.0, 0.3, 1)
+
+            -- Subtle pulse on the icon to indicate ready
+            local pulse = 0.85 + 0.15 * math.sin(now * 2.5)
+            row.icon:SetAlpha(pulse)
         end
     end
 end
