@@ -6,7 +6,7 @@
 ------------------------------------------------------------
 
 ArcaneWatch = {}
-ArcaneWatch.version = "1.2.0"
+ArcaneWatch.version = "1.2.1"
 
 -- Shared color constants
 ArcaneWatch.colors = {

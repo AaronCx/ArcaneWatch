@@ -131,92 +131,72 @@ function Threat:ParseThreatFromMessage(evt, msg)
     local amount = 0
     local source = nil
 
-    -- Try to extract damage amounts and source names from combat messages
-    -- Melee: "Playername hits Mob for 123."
-    -- Spell: "Playername's Spell hits Mob for 123."
-    -- Your: "Your Spell hits Mob for 123." / "You hit Mob for 123."
-    -- Periodic: "Playername's Spell crits Mob for 123."
+    -- NOTE: vanilla Lua 5.0 has NO string.match — use string.find with captures.
+    -- Patterns: "You hit X for N", "Your Spell hits X for N",
+    -- "Playername hits X for N", "Playername's Spell hits X for N", etc.
 
-    -- Pattern: "Your X hits/crits Target for N"
-    local amt = nil
+    local _, _, amt
 
-    -- Self melee: "You hit Target for N."
-    amt = string.match(msg, "^You hit .+ for (%d+)")
+    -- Self melee: "You hit Target for N." / "You crit Target for N."
+    _, _, amt = string.find(msg, "^You hit .+ for (%d+)")
+    if not amt then
+        _, _, amt = string.find(msg, "^You crit .+ for (%d+)")
+    end
     if amt then
         source = UnitName("player")
         amount = tonumber(amt) or 0
     end
 
-    -- Self crit melee: "You crit Target for N."
+    -- Self spell: "Your Spell hits/crits Target for N."
     if not source then
-        amt = string.match(msg, "^You crit .+ for (%d+)")
+        _, _, amt = string.find(msg, "^Your .+ hits .+ for (%d+)")
+        if not amt then
+            _, _, amt = string.find(msg, "^Your .+ crits .+ for (%d+)")
+        end
         if amt then
             source = UnitName("player")
             amount = tonumber(amt) or 0
         end
     end
 
-    -- Self spell: "Your Spell hits Target for N."
+    -- Self periodic: "Target suffers N ... from your Spell."
     if not source then
-        amt = string.match(msg, "^Your .+ hits .+ for (%d+)")
+        _, _, amt = string.find(msg, "suffers (%d+) .+ from your")
         if amt then
             source = UnitName("player")
             amount = tonumber(amt) or 0
         end
     end
 
-    -- Self spell crit: "Your Spell crits Target for N."
+    -- Self healing: "Your Spell heals Target for N."
     if not source then
-        amt = string.match(msg, "^Your .+ crits .+ for (%d+)")
+        _, _, amt = string.find(msg, "^Your .+ heals .+ for (%d+)")
         if amt then
             source = UnitName("player")
-            amount = tonumber(amt) or 0
+            amount = (tonumber(amt) or 0) * HEAL_THREAT_MOD
         end
     end
 
-    -- Self periodic: "Target suffers N ... damage from your Spell."
-    if not source then
-        amt = string.match(msg, "suffers (%d+) .+ from your")
-        if amt then
-            source = UnitName("player")
-            amount = tonumber(amt) or 0
-        end
-    end
-
-    -- Other player melee: "Playername hits Target for N."
+    -- Other player melee: "Playername hits/crits Target for N."
     if not source then
         local who
-        who, amt = string.match(msg, "^(.+) hits .+ for (%d+)")
+        _, _, who, amt = string.find(msg, "^(.+) hits .+ for (%d+)")
+        if not who then
+            _, _, who, amt = string.find(msg, "^(.+) crits .+ for (%d+)")
+        end
         if who and amt then
             source = who
             amount = tonumber(amt) or 0
         end
     end
 
-    -- Other player crit: "Playername crits Target for N."
+    -- Other player spell: "Playername's Spell hits/crits Target for N."
     if not source then
         local who
-        who, amt = string.match(msg, "^(.+) crits .+ for (%d+)")
-        if who and amt then
-            source = who
-            amount = tonumber(amt) or 0
+        _, _, who, amt = string.find(msg, "^(.+)'s .+ hits .+ for (%d+)")
+        if not who then
+            _, _, who, amt = string.find(msg, "^(.+)'s .+ crits .+ for (%d+)")
         end
-    end
-
-    -- Other player spell: "Playername's Spell hits Target for N."
-    if not source then
-        local who
-        who, amt = string.match(msg, "^(.+)'s .+ hits .+ for (%d+)")
-        if who and amt then
-            source = who
-            amount = tonumber(amt) or 0
-        end
-    end
-
-    -- Other player spell crit: "Playername's Spell crits Target for N."
-    if not source then
-        local who
-        who, amt = string.match(msg, "^(.+)'s .+ crits .+ for (%d+)")
         if who and amt then
             source = who
             amount = tonumber(amt) or 0
@@ -226,28 +206,19 @@ function Threat:ParseThreatFromMessage(evt, msg)
     -- Other periodic: "Target suffers N ... from Playername's Spell."
     if not source then
         local who
-        amt, who = string.match(msg, "suffers (%d+) .+ from (.+)'s")
+        _, _, amt, who = string.find(msg, "suffers (%d+) .+ from (.+)'s")
         if who and amt then
             source = who
             amount = tonumber(amt) or 0
         end
     end
 
-    -- Healing events (generate threat too): "Playername's Spell heals Target for N."
+    -- Other healing: "Playername's Spell heals Target for N."
     if not source then
         local who
-        who, amt = string.match(msg, "^(.+)'s .+ heals .+ for (%d+)")
+        _, _, who, amt = string.find(msg, "^(.+)'s .+ heals .+ for (%d+)")
         if who and amt then
             source = who
-            amount = (tonumber(amt) or 0) * HEAL_THREAT_MOD
-        end
-    end
-
-    -- Self healing: "Your Spell heals Target for N."
-    if not source then
-        amt = string.match(msg, "^Your .+ heals .+ for (%d+)")
-        if amt then
-            source = UnitName("player")
             amount = (tonumber(amt) or 0) * HEAL_THREAT_MOD
         end
     end
