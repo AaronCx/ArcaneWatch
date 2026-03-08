@@ -3,7 +3,8 @@
 ## Notes: Combined threat meter and spell cooldown tracker with a clean, modern UI.
 ## Author: ArcaneWatch
 ## SavedVariables: ArcaneWatchDB
-## Version: 1.2.1
+## SavedVariablesPerCharacter: ArcaneWatchCharDB
+## Version: 1.10.0
 
 ArcaneWatch.lua
 ArcaneWatch_Config.lua

@@ -1,12 +1,12 @@
 ------------------------------------------------------------
--- ArcaneWatch.lua
+-- ArcaneWatch.lua  (v1.10.0)
 -- Core addon namespace, constants, and initialization.
 -- Sets up the global table, registers ADDON_LOADED,
 -- and provides shared utility functions.
 ------------------------------------------------------------
 
 ArcaneWatch = {}
-ArcaneWatch.version = "1.2.1"
+ArcaneWatch.version = "1.10.0"
 
 -- Shared color constants
 ArcaneWatch.colors = {
@@ -16,6 +16,8 @@ ArcaneWatch.colors = {
     barBg     = { 0.10,  0.10, 0.12,  0.6  },    -- bar background
     text      = { 0.85,  0.85, 0.85,  1.0  },    -- label text
     header    = { 0.70,  0.80, 0.95,  1.0  },    -- header text
+    warning   = { 1.00,  0.30, 0.20,  0.9  },    -- threat warning flash
+    ready     = { 0.30,  1.00, 0.30,  1.0  },    -- timer ready green
 }
 
 -- WoW class colors (vanilla palette)
@@ -31,7 +33,7 @@ ArcaneWatch.classColors = {
     ["DRUID"]    = { 1.00, 0.49, 0.04 },
 }
 
--- Bar texture path with fallback
+-- Bar texture path
 ArcaneWatch.barTexture = "Interface\\TargetingFrame\\UI-StatusBar"
 
 -- Backdrop template for panels
@@ -85,6 +87,15 @@ function ArcaneWatch.IterGroupUnits(callback)
         end
     else
         callback("player")
+    end
+end
+
+------------------------------------------------------------
+-- Utility: play a sound (vanilla-compatible)
+------------------------------------------------------------
+function ArcaneWatch.PlaySound(soundId)
+    if PlaySound then
+        PlaySound(soundId)
     end
 end
 

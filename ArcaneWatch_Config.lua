@@ -1,22 +1,30 @@
 ------------------------------------------------------------
--- ArcaneWatch_Config.lua
+-- ArcaneWatch_Config.lua  (v1.10.0)
 -- SavedVariables management, defaults, and slash commands.
--- Handles /aw and /arcanewatch commands with a simple
--- config panel toggle.
+-- Supports both global (ArcaneWatchDB) and per-character
+-- (ArcaneWatchCharDB) saved variables.
 ------------------------------------------------------------
 
 ArcaneWatch.Config = {}
 
-local defaults = {
-    threatEnabled  = true,
-    timersEnabled  = true,
-    locked         = false,
-    opacity        = 0.85,
-    threatPos      = { x = -200, y = 0 },
-    timersPos      = { x = 200, y = 0 },
-    configPos      = { x = 0, y = 0 },
-    autoHideThreat = true,
-    trackedSpells  = {},  -- auto-detected from spellbook
+-- Global defaults (shared across characters)
+local globalDefaults = {
+    threatEnabled   = true,
+    timersEnabled   = true,
+    locked          = false,
+    opacity         = 0.85,
+    autoHideThreat  = true,
+    threatWarnPct   = 90,        -- warn at 90% of tank threat
+    threatWarnSound = true,
+    timerReadySound = true,
+}
+
+-- Per-character defaults
+local charDefaults = {
+    threatPos     = { x = -200, y = 0 },
+    timersPos     = { x = 200, y = 0 },
+    configPos     = { x = 0, y = 0 },
+    customSpells  = nil,  -- nil = auto-detect; table = user overrides
 }
 
 ------------------------------------------------------------
@@ -51,33 +59,48 @@ end
 -- Init: load or create saved variables
 ------------------------------------------------------------
 function ArcaneWatch.Config:Init()
+    -- Global settings
     if not ArcaneWatchDB then
-        ArcaneWatchDB = deepCopy(defaults)
+        ArcaneWatchDB = deepCopy(globalDefaults)
     else
-        mergeDefaults(ArcaneWatchDB, defaults)
+        mergeDefaults(ArcaneWatchDB, globalDefaults)
     end
     self.db = ArcaneWatchDB
+
+    -- Per-character settings
+    if not ArcaneWatchCharDB then
+        ArcaneWatchCharDB = deepCopy(charDefaults)
+    else
+        mergeDefaults(ArcaneWatchCharDB, charDefaults)
+    end
+    self.charDb = ArcaneWatchCharDB
+
     self:RegisterSlashCommands()
 end
 
 ------------------------------------------------------------
--- Save: called on PLAYER_LOGOUT
+-- Save
 ------------------------------------------------------------
 function ArcaneWatch.Config:Save()
-    -- Panel positions are saved in real-time by the UI module;
-    -- this hook exists for any future flush needs.
     ArcaneWatchDB = self.db
+    ArcaneWatchCharDB = self.charDb
 end
 
 ------------------------------------------------------------
--- Get / Set helpers
+-- Get / Set helpers (check both dbs)
 ------------------------------------------------------------
 function ArcaneWatch.Config:Get(key)
+    if self.charDb and self.charDb[key] ~= nil then
+        return self.charDb[key]
+    end
     return self.db and self.db[key]
 end
 
 function ArcaneWatch.Config:Set(key, value)
-    if self.db then
+    -- Write to charDb if it's a char-level key
+    if self.charDb and charDefaults[key] ~= nil then
+        self.charDb[key] = value
+    elseif self.db then
         self.db[key] = value
     end
 end
@@ -138,9 +161,9 @@ function ArcaneWatch.Config:ToggleLock()
 end
 
 function ArcaneWatch.Config:ResetPositions()
-    self.db.threatPos = deepCopy(defaults.threatPos)
-    self.db.timersPos = deepCopy(defaults.timersPos)
-    self.db.configPos = deepCopy(defaults.configPos)
+    self.charDb.threatPos = deepCopy(charDefaults.threatPos)
+    self.charDb.timersPos = deepCopy(charDefaults.timersPos)
+    self.charDb.configPos = deepCopy(charDefaults.configPos)
     ArcaneWatch.UI:ApplyPositions()
     DEFAULT_CHAT_FRAME:AddMessage("|cff5a8abfArcaneWatch|r Panel positions reset.")
 end

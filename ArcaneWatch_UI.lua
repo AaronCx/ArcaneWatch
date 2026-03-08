@@ -1,8 +1,8 @@
 ------------------------------------------------------------
--- ArcaneWatch_UI.lua
+-- ArcaneWatch_UI.lua  (v1.10.0)
 -- Creates all visual frames: threat panel, timers panel,
--- and config panel. Handles dragging, positioning, and
--- visibility toggling. All frames live here.
+-- config panel, minimap button. Handles dragging, positioning,
+-- visibility, tooltips, and dynamic panel resizing.
 ------------------------------------------------------------
 
 ArcaneWatch.UI = {}
@@ -46,12 +46,13 @@ local function MakeDraggable(frame, posKey)
     end)
     frame:SetScript("OnMouseUp", function()
         frame:StopMovingOrSizing()
-        -- Save position relative to CENTER of UIParent
         local cx, cy = frame:GetCenter()
         local ux, uy = UIParent:GetCenter()
         if cx and ux then
-            local db = ArcaneWatch.Config.db
-            db[posKey] = { x = cx - ux, y = cy - uy }
+            local charDb = ArcaneWatch.Config.charDb
+            if charDb then
+                charDb[posKey] = { x = cx - ux, y = cy - uy }
+            end
         end
     end)
 end
@@ -78,6 +79,7 @@ local function CreateThreatRow(parent, index)
     row:SetWidth(PANEL_WIDTH_THREAT - PANEL_PAD * 2)
     row:SetHeight(THREAT_ROW_HEIGHT - 2)
     row:SetPoint("TOPLEFT", parent, "TOPLEFT", PANEL_PAD, yOff)
+    row:EnableMouse(true)
 
     -- Background bar
     local barBg = row:CreateTexture(nil, "BACKGROUND")
@@ -114,6 +116,20 @@ local function CreateThreatRow(parent, index)
     pctText:SetJustifyH("RIGHT")
     pctText:SetTextColor(0.9, 0.9, 0.9, 1)
 
+    -- Tooltip on hover
+    row:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+        GameTooltip:AddLine(nameText:GetText() or "", 1, 1, 1)
+        GameTooltip:AddLine("Threat: " .. (pctText:GetText() or "0%"), 0.8, 0.8, 0.8)
+        if row.rawThreat then
+            GameTooltip:AddLine("Raw: " .. string.format("%.0f", row.rawThreat), 0.6, 0.6, 0.6)
+        end
+        GameTooltip:Show()
+    end)
+    row:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
     return {
         frame    = row,
         bar      = bar,
@@ -134,13 +150,14 @@ local function CreateTimerRow(parent, index)
     row:SetWidth(PANEL_WIDTH_TIMERS - PANEL_PAD * 2)
     row:SetHeight(TIMER_ROW_HEIGHT - 2)
     row:SetPoint("TOPLEFT", parent, "TOPLEFT", PANEL_PAD, yOff)
+    row:EnableMouse(true)
 
     -- Spell icon
     local icon = row:CreateTexture(nil, "ARTWORK")
     icon:SetWidth(TIMER_ROW_HEIGHT - 4)
     icon:SetHeight(TIMER_ROW_HEIGHT - 4)
     icon:SetPoint("LEFT", row, "LEFT", 1, 0)
-    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92) -- trim icon borders
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 
     -- Background bar area (right of icon)
     local barBg = row:CreateTexture(nil, "BACKGROUND")
@@ -173,14 +190,34 @@ local function CreateTimerRow(parent, index)
     timeText:SetJustifyH("RIGHT")
     timeText:SetTextColor(1, 1, 1, 1)
 
+    -- Tooltip on hover
+    row:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+        local spellName = nameText:GetText() or ""
+        GameTooltip:AddLine(spellName, 1, 1, 1)
+        local dur = row.spellDuration
+        local typ = row.spellType
+        if typ then
+            GameTooltip:AddLine("Type: " .. typ, 0.7, 0.8, 0.9)
+        end
+        if dur then
+            GameTooltip:AddLine("Duration: " .. ArcaneWatch.FormatTime(dur), 0.6, 0.6, 0.6)
+        end
+        GameTooltip:Show()
+    end)
+    row:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
     return {
-        frame    = row,
-        icon     = icon,
-        bar      = bar,
-        barBg    = barBg,
-        nameText = nameText,
-        timeText = timeText,
-        pulse    = 0,   -- pulse animation state
+        frame         = row,
+        icon          = icon,
+        bar           = bar,
+        barBg         = barBg,
+        nameText      = nameText,
+        timeText      = timeText,
+        spellDuration = nil,
+        spellType     = nil,
     }
 end
 
@@ -193,6 +230,13 @@ function UI:Init()
     self.threatPanel = CreatePanel("ArcaneWatchThreatPanel", PANEL_WIDTH_THREAT, threatH)
     self.threatHeader = AddHeader(self.threatPanel, "Threat")
     MakeDraggable(self.threatPanel, "threatPos")
+
+    -- Threat warning flash overlay
+    self.threatWarning = self.threatPanel:CreateTexture(nil, "OVERLAY")
+    self.threatWarning:SetTexture("Interface\\Buttons\\UI-ListBox-Highlight")
+    self.threatWarning:SetAllPoints(self.threatPanel)
+    self.threatWarning:SetVertexColor(1.0, 0.2, 0.1, 0)
+    self.threatWarning:Hide()
 
     self.threatRows = {}
     for i = 1, MAX_THREAT_ROWS do
@@ -215,6 +259,9 @@ function UI:Init()
     -- Config panel
     self:CreateConfigPanel()
 
+    -- Minimap button
+    self:CreateMinimapButton()
+
     -- Apply saved state
     self:ApplyPositions()
     self:UpdateVisibility()
@@ -222,11 +269,41 @@ function UI:Init()
 end
 
 ------------------------------------------------------------
--- Config panel with toggle buttons
+-- Dynamic threat panel height (shrink to visible rows)
+------------------------------------------------------------
+function UI:SetThreatRowCount(count)
+    if count < 1 then count = 1 end
+    if count > MAX_THREAT_ROWS then count = MAX_THREAT_ROWS end
+    local h = HEADER_HEIGHT + count * THREAT_ROW_HEIGHT + PANEL_PAD
+    self.threatPanel:SetHeight(h)
+end
+
+------------------------------------------------------------
+-- Threat warning flash
+------------------------------------------------------------
+function UI:FlashThreatWarning(active)
+    if not self.threatWarning then return end
+    if active then
+        self.threatWarning:Show()
+        -- Pulse alpha via OnUpdate (driven by Threat module)
+    else
+        self.threatWarning:Hide()
+    end
+end
+
+function UI:SetThreatWarningAlpha(alpha)
+    if self.threatWarning then
+        self.threatWarning:SetVertexColor(1.0, 0.2, 0.1, alpha)
+    end
+end
+
+------------------------------------------------------------
+-- Config panel with toggle buttons, opacity slider,
+-- auto-hide toggle, and sound toggles
 ------------------------------------------------------------
 function UI:CreateConfigPanel()
-    local panelH = 160
-    local panelW = 200
+    local panelW = 210
+    local panelH = 260
     self.configPanel = CreatePanel("ArcaneWatchConfigPanel", panelW, panelH)
     self.configPanel:SetFrameStrata("DIALOG")
     self.configPanel:Hide()
@@ -242,41 +319,138 @@ function UI:CreateConfigPanel()
         self.configPanel:Hide()
     end)
 
-    local function CreateToggleButton(parent, yOff, label, onClick)
-        local btn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    local yPos = -28
+    local function NextY(h)
+        local y = yPos
+        yPos = yPos - (h or 22)
+        return y
+    end
+
+    -- Toggle buttons
+    local function CreateToggleButton(label, onClick)
+        local btn = CreateFrame("Button", nil, self.configPanel, "UIPanelButtonTemplate")
         btn:SetWidth(panelW - 20)
-        btn:SetHeight(20)
-        btn:SetPoint("TOP", parent, "TOP", 0, yOff)
+        btn:SetHeight(18)
+        btn:SetPoint("TOP", self.configPanel, "TOP", 0, NextY(20))
         btn:SetText(label)
         btn:SetScript("OnClick", onClick)
         local txt = btn:GetFontString()
-        if txt then txt:SetFont(txt:GetFont(), 10) end
+        if txt then
+            local font, _, flags = txt:GetFont()
+            if font then txt:SetFont(font, 9, flags) end
+        end
         return btn
     end
 
-    self.cfgBtnThreat = CreateToggleButton(self.configPanel, -30, "Toggle Threat Meter", function()
+    self.cfgBtnThreat = CreateToggleButton("Toggle Threat Meter", function()
         ArcaneWatch.Config:ToggleThreat()
         self:UpdateConfigLabels()
     end)
 
-    self.cfgBtnTimers = CreateToggleButton(self.configPanel, -55, "Toggle Spell Timers", function()
+    self.cfgBtnTimers = CreateToggleButton("Toggle Spell Timers", function()
         ArcaneWatch.Config:ToggleTimers()
         self:UpdateConfigLabels()
     end)
 
-    self.cfgBtnLock = CreateToggleButton(self.configPanel, -80, "Lock / Unlock Panels", function()
+    self.cfgBtnLock = CreateToggleButton("Lock / Unlock Panels", function()
         ArcaneWatch.Config:ToggleLock()
         self:UpdateConfigLabels()
     end)
 
-    self.cfgBtnReset = CreateToggleButton(self.configPanel, -105, "Reset Positions", function()
+    self.cfgBtnReset = CreateToggleButton("Reset Positions", function()
         ArcaneWatch.Config:ResetPositions()
     end)
 
-    -- Status text
+    -- Auto-hide threat checkbox
+    NextY(6) -- spacing
+    local autoHideCheck = CreateFrame("CheckButton", "ArcaneWatchAutoHideCheck", self.configPanel, "UICheckButtonTemplate")
+    autoHideCheck:SetWidth(20)
+    autoHideCheck:SetHeight(20)
+    autoHideCheck:SetPoint("TOPLEFT", self.configPanel, "TOPLEFT", 12, NextY(22))
+    autoHideCheck:SetChecked(ArcaneWatch.Config:Get("autoHideThreat"))
+    autoHideCheck:SetScript("OnClick", function()
+        local val = autoHideCheck:GetChecked() and true or false
+        ArcaneWatch.Config.db.autoHideThreat = val
+        self:UpdateConfigLabels()
+    end)
+    local autoHideLabel = self.configPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    autoHideLabel:SetPoint("LEFT", autoHideCheck, "RIGHT", 2, 0)
+    autoHideLabel:SetText("Auto-hide threat out of combat")
+    autoHideLabel:SetTextColor(0.85, 0.85, 0.85, 1)
+
+    -- Sound toggles
+    local warnSoundCheck = CreateFrame("CheckButton", "ArcaneWatchWarnSoundCheck", self.configPanel, "UICheckButtonTemplate")
+    warnSoundCheck:SetWidth(20)
+    warnSoundCheck:SetHeight(20)
+    warnSoundCheck:SetPoint("TOPLEFT", self.configPanel, "TOPLEFT", 12, NextY(22))
+    warnSoundCheck:SetChecked(ArcaneWatch.Config:Get("threatWarnSound"))
+    warnSoundCheck:SetScript("OnClick", function()
+        ArcaneWatch.Config.db.threatWarnSound = warnSoundCheck:GetChecked() and true or false
+    end)
+    local warnSoundLabel = self.configPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    warnSoundLabel:SetPoint("LEFT", warnSoundCheck, "RIGHT", 2, 0)
+    warnSoundLabel:SetText("Threat warning sound")
+    warnSoundLabel:SetTextColor(0.85, 0.85, 0.85, 1)
+
+    local readySoundCheck = CreateFrame("CheckButton", "ArcaneWatchReadySoundCheck", self.configPanel, "UICheckButtonTemplate")
+    readySoundCheck:SetWidth(20)
+    readySoundCheck:SetHeight(20)
+    readySoundCheck:SetPoint("TOPLEFT", self.configPanel, "TOPLEFT", 12, NextY(22))
+    readySoundCheck:SetChecked(ArcaneWatch.Config:Get("timerReadySound"))
+    readySoundCheck:SetScript("OnClick", function()
+        ArcaneWatch.Config.db.timerReadySound = readySoundCheck:GetChecked() and true or false
+    end)
+    local readySoundLabel = self.configPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    readySoundLabel:SetPoint("LEFT", readySoundCheck, "RIGHT", 2, 0)
+    readySoundLabel:SetText("Timer ready sound")
+    readySoundLabel:SetTextColor(0.85, 0.85, 0.85, 1)
+
+    -- Opacity slider
+    NextY(4) -- spacing
+    local opacityLabel = self.configPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    opacityLabel:SetPoint("TOPLEFT", self.configPanel, "TOPLEFT", 14, NextY(14))
+    opacityLabel:SetText("Opacity")
+    opacityLabel:SetTextColor(0.85, 0.85, 0.85, 1)
+
+    self.opacityValue = self.configPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    self.opacityValue:SetPoint("TOPRIGHT", self.configPanel, "TOPRIGHT", -14, opacityLabel:GetTop() and 0 or 0)
+    self.opacityValue:SetPoint("RIGHT", self.configPanel, "RIGHT", -14, 0)
+    self.opacityValue:SetPoint("TOP", opacityLabel, "TOP", 0, 0)
+    self.opacityValue:SetTextColor(0.7, 0.8, 0.95, 1)
+
+    local slider = CreateFrame("Slider", "ArcaneWatchOpacitySlider", self.configPanel, "OptionsSliderTemplate")
+    slider:SetWidth(panelW - 30)
+    slider:SetHeight(14)
+    slider:SetPoint("TOP", self.configPanel, "TOP", 0, NextY(20))
+    slider:SetMinMaxValues(20, 100)
+    slider:SetValueStep(5)
+    slider:SetValue((ArcaneWatch.Config:Get("opacity") or 0.85) * 100)
+    getglobal(slider:GetName() .. "Low"):SetText("20%")
+    getglobal(slider:GetName() .. "High"):SetText("100%")
+    getglobal(slider:GetName() .. "Text"):SetText("")
+    slider:SetScript("OnValueChanged", function()
+        local val = slider:GetValue() / 100
+        ArcaneWatch.Config.db.opacity = val
+        self:ApplyOpacity()
+        if self.opacityValue then
+            self.opacityValue:SetText(string.format("%.0f%%", val * 100))
+        end
+    end)
+    self.opacitySlider = slider
+    if self.opacityValue then
+        self.opacityValue:SetText(string.format("%.0f%%", (ArcaneWatch.Config:Get("opacity") or 0.85) * 100))
+    end
+
+    -- Status text at bottom
     self.cfgStatus = self.configPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     self.cfgStatus:SetPoint("BOTTOM", self.configPanel, "BOTTOM", 0, 8)
     self.cfgStatus:SetTextColor(0.6, 0.6, 0.6, 1)
+end
+
+function UI:ApplyOpacity()
+    local alpha = ArcaneWatch.Config:Get("opacity") or 0.85
+    self.threatPanel:SetAlpha(alpha)
+    self.timersPanel:SetAlpha(alpha)
 end
 
 function UI:UpdateConfigLabels()
@@ -300,16 +474,73 @@ function UI:ToggleConfigPanel()
 end
 
 ------------------------------------------------------------
--- Position management
+-- Minimap button
+------------------------------------------------------------
+function UI:CreateMinimapButton()
+    local btn = CreateFrame("Button", "ArcaneWatchMinimapBtn", Minimap)
+    btn:SetWidth(28)
+    btn:SetHeight(28)
+    btn:SetFrameStrata("MEDIUM")
+    btn:SetFrameLevel(8)
+    btn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+    local overlay = btn:CreateTexture(nil, "OVERLAY")
+    overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    overlay:SetWidth(54)
+    overlay:SetHeight(54)
+    overlay:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+
+    local icon = btn:CreateTexture(nil, "BACKGROUND")
+    icon:SetTexture("Interface\\Icons\\Spell_Arcane_Arcane04")
+    icon:SetWidth(18)
+    icon:SetHeight(18)
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    icon:SetPoint("CENTER", btn, "CENTER", 0, 1)
+
+    -- Position around minimap at 225 degrees
+    local angle = 225
+    local rad = math.rad(angle)
+    local xOff = 80 * math.cos(rad)
+    local yOff = 80 * math.sin(rad)
+    btn:SetPoint("CENTER", Minimap, "CENTER", xOff, yOff)
+
+    btn:SetScript("OnClick", function()
+        if arg1 == "LeftButton" then
+            self:ToggleConfigPanel()
+        elseif arg1 == "RightButton" then
+            -- Right-click: quick toggle both panels
+            ArcaneWatch.Config:ToggleThreat()
+            ArcaneWatch.Config:ToggleTimers()
+        end
+    end)
+    btn:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(btn, "ANCHOR_LEFT")
+        GameTooltip:AddLine("|cff5a8abfArcaneWatch|r v" .. ArcaneWatch.version)
+        GameTooltip:AddLine("Left-click: Config", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine("Right-click: Toggle panels", 0.8, 0.8, 0.8)
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+
+    self.minimapBtn = btn
+end
+
+------------------------------------------------------------
+-- Position management (uses per-character DB)
 ------------------------------------------------------------
 function UI:ApplyPositions()
-    local db = ArcaneWatch.Config.db
+    local charDb = ArcaneWatch.Config.charDb
+    if not charDb then return end
     self.threatPanel:ClearAllPoints()
-    self.threatPanel:SetPoint("CENTER", UIParent, "CENTER", db.threatPos.x, db.threatPos.y)
+    self.threatPanel:SetPoint("CENTER", UIParent, "CENTER", charDb.threatPos.x, charDb.threatPos.y)
     self.timersPanel:ClearAllPoints()
-    self.timersPanel:SetPoint("CENTER", UIParent, "CENTER", db.timersPos.x, db.timersPos.y)
+    self.timersPanel:SetPoint("CENTER", UIParent, "CENTER", charDb.timersPos.x, charDb.timersPos.y)
     self.configPanel:ClearAllPoints()
-    self.configPanel:SetPoint("CENTER", UIParent, "CENTER", db.configPos.x, db.configPos.y)
+    self.configPanel:SetPoint("CENTER", UIParent, "CENTER", charDb.configPos.x, charDb.configPos.y)
+    self:ApplyOpacity()
 end
 
 ------------------------------------------------------------
@@ -318,7 +549,6 @@ end
 function UI:UpdateVisibility()
     local db = ArcaneWatch.Config.db
     if db.threatEnabled then
-        -- Threat panel may be managed by auto-show logic; just ensure it's not force-hidden
         if not db.autoHideThreat then
             self.threatPanel:Show()
         end
@@ -336,8 +566,5 @@ end
 -- Lock state
 ------------------------------------------------------------
 function UI:UpdateLock()
-    local locked = ArcaneWatch.Config:Get("locked")
-    self.threatPanel:EnableMouse(not locked or true) -- always receive mouse for tooltip, etc
-    self.timersPanel:EnableMouse(not locked or true)
     -- Drag is gated inside OnMouseDown handler via Config check
 end
