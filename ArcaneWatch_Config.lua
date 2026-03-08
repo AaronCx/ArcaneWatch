@@ -16,16 +16,7 @@ local defaults = {
     timersPos      = { x = 200, y = 0 },
     configPos      = { x = 0, y = 0 },
     autoHideThreat = true,
-    trackedSpells  = {
-        "Corruption",
-        "Curse of Agony",
-        "Unstable Affliction",
-        "Siphon Life",
-        "Shadow Bolt",
-        "Fear",
-        "Death Coil",
-        "Shadowburn",
-    },
+    trackedSpells  = {},  -- auto-detected from spellbook
 }
 
 ------------------------------------------------------------

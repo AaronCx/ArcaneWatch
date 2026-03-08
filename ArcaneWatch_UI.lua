@@ -14,7 +14,7 @@ local THREAT_ROW_HEIGHT   = 16
 local TIMER_ROW_HEIGHT    = 20
 local HEADER_HEIGHT       = 22
 local MAX_THREAT_ROWS     = 5
-local MAX_TIMER_ROWS      = 10
+local MAX_TIMER_ROWS      = 9
 local PANEL_PAD           = 6
 
 ------------------------------------------------------------
